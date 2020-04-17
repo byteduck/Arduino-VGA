@@ -19,25 +19,55 @@
  * 
  * I used this wikipedia page to gather all of this info: https://en.wikipedia.org/wiki/Video_Graphics_Array
  */
+ 
+#include <avr/sleep.h>
+
+//Macro for converting define to string
+#define _STR(X) #X
+#define STR(X) _STR(X)
 
 #define VSYNC_PIN 11
 #define HSYNC_PIN 9
-#define RED_PIN 7
-#define GREEN_PIN 6
-#define BLUE_PIN 5
+#define RED_PIN 27
+#define GREEN_PIN 28
+#define BLUE_PIN 29
+#define DISPLAY_PIN 4
 
-#define VERTICAL_SKIP 32 //Vertical lines to skip during blanking interval
+#define VERTICAL_SKIP 90 //Vertical lines to skip during blanking interval
 
+#define RES_WIDTH 640
 #define RES_HEIGHT 480
 
-byte blankLinesLeft;
-unsigned short line;
+//How many bytes (pixels) wide the display buffer is
+#define PIXELS_WIDTH 120
+//How many bytes wide the display buffer is
+#define BYTES_WIDTH 60
+//How many pixels high the display buffer is
+#define PIXELS_HEIGHT 60
+
+//The bit() directive is just shorthand for writing out a number with a certain bit set.
+#define RED bit(0) //0
+#define GREEN bit(1) //2
+#define BLUE bit(2) //4
+
+//3-bit color. 0bBGRBGR__
+byte displayBuffer[BYTES_WIDTH * PIXELS_HEIGHT]; 
+
+//This stores the image we're going to display.
+#define IMAGE_COLORS2
+#include "image.h"
+
+int blankLinesLeft; //How many lines are left in the blanking interval
+byte line; //What line we're drawing in the framebuffer (NOT THE ACTUAL SCREEN LINE)
+byte sLine; //What subline we're on
+#define SUBLINES_PER_LINE 6
 
 //Vertical sync interrupt. Called every time a new frame starts.
 ISR (TIMER1_OVF_vect) {
   //Set blankLinesLeft to VERTICAL_SKIP because we need to not draw anything during veritcal blanking
   blankLinesLeft = VERTICAL_SKIP;
   //Set line to 0 since we're back at the first line
+  sLine = -1;
   line = 0;
 }
 
@@ -49,37 +79,64 @@ ISR (TIMER2_OVF_vect) {
     return;
   }
 
-  //If we're past the end of the screen, do nothing
-  if(line >= RES_HEIGHT) {
-    return;
+  if(line < PIXELS_HEIGHT) {
+    /**
+     * Here, we write to the PORTA register directly. The last 3 bits on
+     * PORTA correspond to pins 27, 28, and 29, so by writing to it we
+     * can change the state of those pins all at the same time. This is
+     * also done with assembly to avoid C++ overhead, since we need to
+     * have this be as fast as possible. The below assembly code is approx.
+     * equal to this pseudocode:
+     * for(i = 0..BYTES_WIDTH){
+     *   pixels = displayBuffer[line/8][i]
+     *   PORTA = pixels
+     *   pixels = pixels << 3
+     *   PORTA = pixels
+     * }
+     * We shift pixels 3 bits left and write it to PORTA again, since we store
+     * two pixels (3-bit color) per byte of the display buffer.
+     */
+    asm volatile(
+      ".rept 30                   \n\t"
+      "  nop                      \n\t"
+      ".endr                      \n\t"
+      "ldi r20, 8                 \n\t" // Load the number 8 into r20
+      ".rept " STR(BYTES_WIDTH)  "\n\t" // Rept is just a macro that actually copies the below code x amount of times
+      "  ld r16, Z+               \n\t" // Load the byte in the current position in the display buffer to r16 and add one to the display buffer pointer
+      "  out %[port], r16         \n\t" // Write r16 to PORTA
+      "  mul r16, r20             \n\t" // Multiply r16 by r20 (which is 8) which is the same as shifting 3 bits left
+      "  out %[port], r0          \n\t" // Write the result of that to PORTA again
+      ".endr                      \n\t"
+      "nop                        \n\t" // Do nothing for one clock cycle to expand the last pixel
+      "ldi r16,0                  \n\t" // Load 0 into r16
+      "out %[port], r16           \n\t" // Write that to PORTA to turn off the pins
+      :
+      : [port] "I" (_SFR_IO_ADDR(PORTA)),                // This specifies that %[port] will correspond to PORTA
+        "z" "I" (displayBuffer + line * BYTES_WIDTH) // This specifies that the display buffer pointer at the current line will be stored in Z
+      : "r16", "r20", "memory"                           // This specifies r16 and r20 for use for storing "variables"
+    );
+    
+    if(++sLine == SUBLINES_PER_LINE - 1) {
+      sLine = -1;
+      line++;
+    }
   }
-
-  //Red, green, or blue, depending on what line we're on.
-  //Currently not precise at all, but it gets the job done.
-
-  if(line < 160) {
-    digitalWrite(RED_PIN, HIGH);
-    delay(1);
-    digitalWrite(RED_PIN, LOW);
-  } else if(line < 320) {
-    digitalWrite(GREEN_PIN, HIGH);
-    delay(1);
-    digitalWrite(GREEN_PIN, LOW);
-  } else {
-    digitalWrite(BLUE_PIN, HIGH);
-    delay(1);
-    digitalWrite(BLUE_PIN, LOW);
-  }
-  
-  line++;
 }
 
 void setup() {
+  //Setup pins
   pinMode(VSYNC_PIN, OUTPUT);
   pinMode(HSYNC_PIN, OUTPUT);
   pinMode(RED_PIN, OUTPUT);
   pinMode(GREEN_PIN, OUTPUT);
   pinMode(BLUE_PIN, OUTPUT);
+
+  //Copy the image (tiled) into the display buffer
+  for(int y = 0; y < PIXELS_HEIGHT; y++){
+    for(int x = 0; x < BYTES_WIDTH; x++) {
+      displayBuffer[x + y * BYTES_WIDTH] = pgm_read_byte_near(IMAGE + (x % IMAGE_WIDTH) + ((y % IMAGE_HEIGHT) * IMAGE_WIDTH));
+    }
+  }
 
   cli(); //Clear interrupts
 
@@ -117,15 +174,25 @@ void setup() {
    * This is pin 9 on the Mega 2560.
    */
   TCCR2A = bit(WGM20) | bit(WGM21) | bit(COM2B1); //Fast PWM, 8-bit, pin 5
-  TCCR2B=bit(WGM22) | bit(CS21); //Prescaler of 8
-  OCR2A=63; // Generate pulse when counter gets to 63
-  OCR2B=7; // Keep the pulse on for 8 counts (8us)
-  TIFR2=bit(TOV2); // Clear overflow flag just in case
-  TIMSK2=bit(TOIE2); // Call interrupt ISR (TIMER2_OVF_vect) when counter reaches target
+  TCCR2B = bit(WGM22) | bit(CS21); //Prescaler of 8
+  OCR2A = 63; // Generate pulse when counter gets to 63
+  OCR2B = 7; // Keep the pulse on for 8 counts (8us)
+  TIFR2 = bit(TOV2); // Clear overflow flag just in case
+  TIMSK2 = bit(TOIE2); // Call interrupt ISR (TIMER2_OVF_vect) when counter reaches target
 
   sei(); //Set interrupts
+  set_sleep_mode (SLEEP_MODE_IDLE); //Processor should sleep in between interrupts so timing is right
+}
+
+inline void setPixel(byte x, byte y, byte color) {
+  byte* pixel = &displayBuffer[x/2 + y * BYTES_WIDTH];
+  if(x % 2 == 0) *pixel = (color << 5) | (*pixel & 0b00011111);
+  else *pixel = (color << 2) | (*pixel & 0b11100011);
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
+  // Wait for interrupt. Without this, the display shakes because the CPU is still working when the interrupt
+  // happens so the delay to switch from the running code to the interrupt code varies by a few microseconds
+  // this also means that I can't do anything in loop, so I'll have to find a workaround to the shaking
+  sleep_mode();
 }
