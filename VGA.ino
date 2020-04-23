@@ -19,6 +19,12 @@
  * 
  * I used this wikipedia page to gather all of this info: https://en.wikipedia.org/wiki/Video_Graphics_Array
  */
+ 
+#include <avr/sleep.h>
+
+//Macro for converting define to string
+#define _STR(X) #X
+#define STR(X) _STR(X)
 
 #include <avr/sleep.h>
 
@@ -74,6 +80,13 @@ void setup() {
   for(int y = 0; y < PIXELS_HEIGHT; y++){
     for(int x = 0; x < PIXELS_WIDTH; x++) {
       displayBuffer[x + y * PIXELS_WIDTH] = pgm_read_byte_near(IMAGE + (x % IMAGE_WIDTH) + ((y % IMAGE_HEIGHT) * IMAGE_WIDTH));
+    }
+  }
+
+  //Copy the image (tiled) into the display buffer
+  for(int y = 0; y < PIXELS_HEIGHT; y++){
+    for(int x = 0; x < BYTES_WIDTH; x++) {
+      displayBuffer[x + y * BYTES_WIDTH] = pgm_read_byte_near(IMAGE + (x % IMAGE_WIDTH) + ((y % IMAGE_HEIGHT) * IMAGE_WIDTH));
     }
   }
 
