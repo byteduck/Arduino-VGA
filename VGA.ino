@@ -85,8 +85,8 @@ void setup() {
 
   //Copy the image (tiled) into the display buffer
   for(int y = 0; y < PIXELS_HEIGHT; y++){
-    for(int x = 0; x < BYTES_WIDTH; x++) {
-      displayBuffer[x + y * BYTES_WIDTH] = pgm_read_byte_near(IMAGE + (x % IMAGE_WIDTH) + ((y % IMAGE_HEIGHT) * IMAGE_WIDTH));
+    for(int x = 0; x < PIXELS_WIDTH; x++) {
+      displayBuffer[x + y * PIXELS_WIDTH] = pgm_read_byte_near(IMAGE + (x % IMAGE_WIDTH) + ((y % IMAGE_HEIGHT) * IMAGE_WIDTH));
     }
   }
 
